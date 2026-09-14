@@ -1,0 +1,19 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.llmorpheus/
+.DS_Store
+
+# Secrets: never commit. Copy .env.example to .env instead.
+.env
+.env.*
+!.env.example
+
+# Target projects are cloned into subjects/<name>/; only their .conf files and
+# the README are tracked.
+subjects/*/

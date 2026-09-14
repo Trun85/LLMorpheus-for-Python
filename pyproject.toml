@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "llmorpheus-py"
+version = "0.1.0"
+description = "LLM-based mutation testing for Python, after Tip, Bell and Schäfer's LLMorpheus"
+readme = "README.md"
+requires-python = ">=3.9"
+keywords = ["mutation testing", "llm", "testing", "test quality"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "Programming Language :: Python :: 3",
+  "Topic :: Software Development :: Testing",
+]
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=7"]
+
+[project.scripts]
+llmorpheus = "llmorpheus.cli:main"
+
+[tool.setuptools]
+packages = [
+  "llmorpheus",
+  "llmorpheus.analysis",
+  "llmorpheus.execution",
+  "llmorpheus.generation",
+  "llmorpheus.llm",
+  "llmorpheus.prompting",
+]
+
+[tool.setuptools.package-data]
+"llmorpheus.prompting" = ["templates/*.txt"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

@@ -1,0 +1,7 @@
+```python
+{{code}}
+```
+Replace the PLACEHOLDER with a single line of Python code that is different from
+`{{orig}}` and that introduces a bug.
+
+Provide three answers as fenced code blocks, each containing a single line of code.
