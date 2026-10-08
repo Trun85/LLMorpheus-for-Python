@@ -293,3 +293,44 @@ def test_subject_status_checks_the_pinned_version_and_local_edits(repo):
     info = _subject_status(args, project, console)
     assert info["modified"] is True
     assert "local modifications" in stream.getvalue()
+
+
+def test_a_subject_may_pin_a_commit_instead_of_a_tag(repo):
+    """Subjects taken from a bug benchmark are pinned by commit; only tags were accepted."""
+    project = repo / "subjects" / "demo"
+    write(project / "pkg" / "module.py", "X = 1\n")
+
+    def git(*arguments):
+        subprocess.run(
+            [
+                "git", "-C", str(project),
+                "-c", "user.name=t", "-c", "user.email=t@example.invalid",
+                "-c", "commit.gpgsign=false",
+            ]
+            + list(arguments),
+            check=True,
+            capture_output=True,
+        )
+
+    git("init", "-q")
+    git("add", ".")
+    git("commit", "-q", "-m", "init")
+    commit = subprocess.run(
+        ["git", "-C", str(project), "rev-parse", "HEAD"],
+        check=True, capture_output=True, text=True,
+    ).stdout.strip()
+
+    def status(version):
+        write(
+            repo / "subjects" / "demo.conf",
+            "LLMORPHEUS_PROJECT=demo\nLLMORPHEUS_SRC=pkg\n"
+            "LLMORPHEUS_VERSION={}\n".format(version),
+        )
+        args = parse_arguments(["run", "--subject", "demo"], environ={}, repo_root=repo)
+        stream = io.StringIO()
+        _subject_status(args, project, Console(stream=stream, use_colour=False))
+        return stream.getvalue()
+
+    assert status(commit) == ""
+    assert status(commit[:7]) == ""
+    assert "pins version" in status("0" * 40)

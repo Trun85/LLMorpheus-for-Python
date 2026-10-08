@@ -311,6 +311,11 @@ def _link_latest(project_root: Path, output_dir: Path) -> None:
         pass
 
 
+def _is_commit_sha(version: str) -> bool:
+    """Subjects from a bug benchmark pin a commit; releases pin a tag. 7 is git's shortest."""
+    return len(version) >= 7 and all(character in "0123456789abcdefABCDEF" for character in version)
+
+
 def _project_root(args: argparse.Namespace) -> Path:
     try:
         return resolve_project_root(args.project)
@@ -322,9 +327,16 @@ def _project_root(args: argparse.Namespace) -> Path:
         version = settings.get("LLMORPHEUS_VERSION")
         hint = "see subjects/README.md"
         if repo and version:
-            hint = "clone it first:  git clone --branch {} --depth 1 {} {}".format(
-                version, repo, shlex.quote(str(args.project))
-            )
+            target = shlex.quote(str(args.project))
+            if _is_commit_sha(version):
+                # --branch takes a tag or branch, never a commit: clone, then check out.
+                hint = "clone it first:  git clone {} {} && git -C {} checkout {}".format(
+                    repo, target, target, version
+                )
+            else:
+                hint = "clone it first:  git clone --branch {} --depth 1 {} {}".format(
+                    version, repo, target
+                )
         raise NotADirectoryError(
             "subject {!r}: {} does not exist - {}".format(
                 settings.subject_name, args.project, hint
@@ -372,7 +384,10 @@ def _subject_status(
     commit = _git(project_root, "rev-parse", "HEAD")
     tag = _git(project_root, "describe", "--tags", "--exact-match", "HEAD")
     info.update(commit=commit, tag=tag)
-    if version and tag != version:
+    pinned_by_sha = bool(
+        version and commit and _is_commit_sha(version) and commit.startswith(version.lower())
+    )
+    if version and tag != version and not pinned_by_sha:
         console.warn(
             "{} pins version {}, but {} is checked out at {}".format(
                 settings.subject_file.name, version, project_root, tag or (commit or "?")[:12]

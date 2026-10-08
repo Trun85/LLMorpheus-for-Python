@@ -129,10 +129,13 @@ The loader enforces a few rules so a key cannot leak by accident:
   environment cannot copy a key into `results.json`.
 - A misspelt `LLMORPHEUS_*` key is an error that suggests the right name.
 
-When a subject pins a version, `generate` and `run` warn if the checkout is at
-a different tag or has modified tracked files, and record the commit in
-`mutants.json`. [subjects/README.md](subjects/README.md) has the setup steps
-for isort, mlxtend and typesystem.
+When a subject pins a version - a release tag, or a commit SHA for a subject
+taken from a bug benchmark such as BugsInPy++ - `generate` and `run` warn if
+the checkout is elsewhere or has modified tracked files, and record the commit
+in `mutants.json`. [subjects/README.md](subjects/README.md) has the setup steps
+for isort, mlxtend, pysnooper and typesystem; pysnooper's suite runs in about a
+tenth of a second, which makes it the cheapest subject for trying out a model
+or a template.
 
 ## Useful flags
 
