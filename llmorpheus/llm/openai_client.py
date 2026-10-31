@@ -71,9 +71,10 @@ class OpenAIClient(LLMClient):
         if not isinstance(message, dict):
             raise LLMError("no message in the first choice: {}".format(str(data)[:300]))
         text = message.get("content") or ""
-        if not text.strip() and message.get("reasoning_content"):
-            # Reasoning models (DeepSeek, and others using this field) can spend
-            # the entire token budget thinking and return no answer at all.
+        if not text.strip() and (message.get("reasoning_content") or message.get("reasoning")):
+            # Reasoning models can spend the entire token budget thinking and return
+            # no answer at all. DeepSeek names the field reasoning_content, OpenRouter
+            # reasoning; missing either would yield zero mutants and no error.
             raise LLMError(
                 "the model used its whole {}-token budget on reasoning and returned "
                 "no answer (finish_reason={!r}); raise --max-tokens or turn thinking "

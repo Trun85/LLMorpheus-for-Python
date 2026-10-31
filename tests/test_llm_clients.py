@@ -144,3 +144,54 @@ def test_cli_raises_the_token_budget_only_when_thinking(tmp_path):
     assert plain.max_tokens == 250 and plain.thinking is False
     assert thinking.max_tokens == THINKING_MAX_TOKENS and thinking.thinking is True
     assert explicit.max_tokens == 900
+
+
+def test_openrouter_turns_reasoning_off_and_pins_the_route(fake_api, monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
+    client = build_client("openrouter", base_url=fake_api.url, route=["deepinfra/fp8/flex"])
+
+    response = client.complete("s", "u")
+
+    (request,) = fake_api.captured
+    assert request["authorization"] == "Bearer sk-or-test"
+    assert request["body"]["model"] == "deepseek/deepseek-v4.1-flash"
+    assert request["body"]["reasoning"] == {"enabled": False}
+    assert request["body"]["provider"] == {"order": ["deepinfra/fp8/flex"], "allow_fallbacks": False}
+    assert "a != b" in response.text
+
+
+def test_openrouter_without_a_route_lets_openrouter_choose(fake_api, monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
+    build_client("openrouter", base_url=fake_api.url).complete("s", "u")
+    assert "provider" not in fake_api.captured[0]["body"]
+
+
+def test_openrouter_reasoning_without_an_answer_is_a_clear_error(fake_api, monkeypatch):
+    """OpenRouter names the field `reasoning`; an empty answer must not pass as zero mutants."""
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
+    fake_api.replies.append(
+        {"choices": [{"message": {"content": "", "reasoning": "Let me think…"}, "finish_reason": "length"}]}
+    )
+    client = build_client("openrouter", base_url=fake_api.url, attempts=1)
+
+    with pytest.raises(LLMError) as error:
+        client.complete("s", "u")
+    assert "reasoning" in str(error.value)
+
+
+def test_route_is_part_of_the_cache_key():
+    a = build_client("openrouter", route=["deepinfra/fp8/flex"])
+    b = build_client("openrouter", route=["openinference/fp4"])
+    assert a._cache_key("s", "u") != b._cache_key("s", "u")
+
+
+def test_route_is_rejected_for_other_providers():
+    with pytest.raises(ValueError):
+        build_client("openai", route=["deepinfra/fp8"])
+
+
+def test_cli_route_accepts_repeated_and_comma_separated_endpoints(tmp_path):
+    args = build_parser().parse_args(
+        ["generate", "--provider", "openrouter", "--route", "a/fp8", "--route", "b,c", "--no-cache"]
+    )
+    assert _client(args, tmp_path).route == ["a/fp8", "b", "c"]

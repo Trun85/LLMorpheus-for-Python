@@ -46,7 +46,7 @@ WORK_DIR = ".llmorpheus"
 # Append-style options cannot take their defaults via ``set_defaults``: argparse
 # appends command-line values to a list default instead of replacing it, so
 # ``--src x`` would silently add to the subject's sources.
-_LIST_DESTS = ("src", "include", "exclude", "kinds")
+_LIST_DESTS = ("src", "include", "exclude", "kinds", "route")
 
 
 # --------------------------------------------------------------------------
@@ -112,6 +112,12 @@ def _add_project_arguments(parser: argparse.ArgumentParser) -> None:
     )
     group.add_argument(
         "--exclude", action="append", metavar="GLOB", help="never mutate files matching GLOB"
+    )
+    group.add_argument(
+        "--lines",
+        action="append",
+        metavar="FILE:START-END",
+        help="in FILE, only mutate locations starting on these lines; repeatable",
     )
 
 
@@ -191,6 +197,13 @@ def _add_llm_arguments(parser: argparse.ArgumentParser) -> None:
         default=False,
         help="deepseek only: enable thinking mode (off by default; ignores --temperature "
         "and raises the default --max-tokens to {})".format(THINKING_MAX_TOKENS),
+    )
+    group.add_argument(
+        "--route",
+        action="append",
+        metavar="ENDPOINT",
+        help="openrouter only: upstream endpoints to use, in order, with no fallback "
+        "(e.g. deepinfra/fp8/flex)",
     )
 
 
@@ -276,6 +289,8 @@ def _apply_list_settings(args: argparse.Namespace, settings: Settings) -> None:
             value = settings.list_default(dest)
             if value:
                 setattr(args, dest, list(value))  # type: ignore[call-overload]
+                if dest == "route":
+                    args.route_from_settings = True
     if hasattr(args, "test_env"):
         merged = dict(settings.list_default("test_env") or {})  # type: ignore[call-overload]
         merged.update(_test_env(args))
@@ -426,6 +441,7 @@ def _generator_config(args: argparse.Namespace, project_root: Path, output_dir: 
         include=_split_list(args.include),
         exclude=_split_list(args.exclude),
         kinds=_split_list(args.kinds),
+        lines=list(args.lines or ()),
         template=args.template,
         system_template=args.system_template,
         max_context_lines=args.max_context_lines,
@@ -442,10 +458,25 @@ def _generator_config(args: argparse.Namespace, project_root: Path, output_dir: 
 
 def _client(args: argparse.Namespace, project_root: Path):
     cache_dir = None if args.no_cache else project_root / WORK_DIR / "cache"
+    settings = getattr(args, "settings", None)
+    provider = str(args.provider).lower()
+    route = _split_list(args.route)
+    thinking = args.thinking
+    # Defaults from .env or a subject file apply to whichever provider is active,
+    # so one that only means something to another provider is ignored rather
+    # than failing the run. The same option given as a flag is still an error.
+    if provider != "openrouter" and getattr(args, "route_from_settings", False):
+        route = []
+    if (
+        provider != "deepseek"
+        and thinking
+        and settings is not None
+        and settings.get("LLMORPHEUS_THINKING") is True
+    ):
+        thinking = False
     max_tokens = args.max_tokens
     if max_tokens is None:
-        max_tokens = THINKING_MAX_TOKENS if args.thinking else 250
-    settings = getattr(args, "settings", None)
+        max_tokens = THINKING_MAX_TOKENS if thinking else 250
     secrets: Dict[str, str] = {}
     if settings is not None:
         secrets = settings.secrets(extra_names=[args.api_key_env] if args.api_key_env else ())
@@ -460,8 +491,9 @@ def _client(args: argparse.Namespace, project_root: Path):
         rate_limit_ms=args.rate_limit,
         timeout=args.request_timeout,
         cache_dir=cache_dir,
-        thinking=args.thinking,
+        thinking=thinking,
         secrets=secrets,
+        route=route,
     )
 
 

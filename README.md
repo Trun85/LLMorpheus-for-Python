@@ -72,9 +72,12 @@ points it at anything compatible:
 
 ```bash
 # OpenRouter (the paper used llama-3.3-70b-instruct and codellama variants)
-python -m llmorpheus all --src src --provider openai \
-  --base-url https://openrouter.ai/api/v1 --api-key-env OPENROUTER_API_KEY \
+export OPENROUTER_API_KEY=sk-or-...
+python -m llmorpheus all --src src --provider openrouter \
   --model meta-llama/llama-3.3-70b-instruct
+
+# OpenRouter, pinned to one upstream (defaults to deepseek/deepseek-v4.1-flash)
+python -m llmorpheus all --src src --provider openrouter --route deepinfra/fp8/flex
 
 # A local model — no key required
 python -m llmorpheus all --src src --provider openai \
@@ -95,6 +98,16 @@ budget with the answer — at the default 250 tokens it can use it all up and
 return nothing — so `--thinking` also raises the default `--max-tokens` to 4096.
 A one-line placeholder replacement rarely benefits from the extra reasoning,
 and every reasoning token is billed.
+
+The `openrouter` provider switches reasoning off the same way: many models it
+serves reason by default, and through a plain `--provider openai --base-url`
+they spend the whole budget thinking and return empty answers. OpenRouter also
+routes each request to an upstream of its choosing, and upstreams for one model
+differ in price by up to ten times and in quantization. `--route` (or
+`LLMORPHEUS_ROUTE`) pins the endpoints to use, in order, with no fallback, so a
+run's completions all come from the same weights at a known price. List a
+model's endpoints and their tags with
+`curl https://openrouter.ai/api/v1/models/<model>/endpoints`.
 
 Completions are cached under `.llmorpheus/cache/`, keyed by prompt, model,
 temperature and token budget, so re-running after a crash costs nothing.

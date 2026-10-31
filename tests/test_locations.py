@@ -100,6 +100,35 @@ def test_resolve_kinds_rejects_unknown_names():
         raise AssertionError("expected ValueError")
 
 
+def test_line_ranges_keep_only_locations_starting_inside_them(tmp_path):
+    from llmorpheus.generation.generator import GeneratorConfig, collect_locations
+
+    (tmp_path / "pkg").mkdir()
+    (tmp_path / "pkg" / "a.py").write_text("x = f(1)\ny = g(2)\nz = h(3)\n")
+    (tmp_path / "pkg" / "b.py").write_text("w = k(4)\n")
+
+    def lines_with_locations(lines):
+        config = GeneratorConfig(project_root=tmp_path, sources=["pkg"], lines=lines)
+        _, per_file = collect_locations(config)
+        return {path: sorted({loc.start.line for loc in locs}) for path, locs in per_file.items()}
+
+    assert lines_with_locations([]) == {"pkg/a.py": [1, 2, 3], "pkg/b.py": [1]}
+    # A file with ranges is narrowed; one without keeps everything.
+    assert lines_with_locations(["pkg/a.py:2-3"]) == {"pkg/a.py": [2, 3], "pkg/b.py": [1]}
+    assert lines_with_locations(["pkg/a.py:1", "pkg/a.py:3-3"]) == {"pkg/a.py": [1, 3], "pkg/b.py": [1]}
+
+
+def test_line_ranges_reject_malformed_specs():
+    import pytest
+
+    from llmorpheus.generation.generator import parse_line_ranges
+
+    assert parse_line_ranges(["a/b.py:5-9"]) == {"a/b.py": [(5, 9)]}
+    for bad in ("a.py", "a.py:x-3", "a.py:9-5", ":1-2"):
+        with pytest.raises(ValueError):
+            parse_line_ranges([bad])
+
+
 def test_form_feed_and_unicode_separators_do_not_shift_lines():
     """str.splitlines() breaks at these, Python's tokenizer does not."""
     body = "result = compute(total, rate)\nif result > limit:\n    notify(user)\n"
@@ -109,3 +138,21 @@ def test_form_feed_and_unicode_separators_do_not_shift_lines():
         assert [(item.kind, item.start, item.original) for item in located] == [
             (item.kind, item.start, item.original) for item in plain
         ], repr(odd)
+
+
+def test_line_ranges_must_name_a_selected_file(tmp_path):
+    import pytest
+    from llmorpheus.generation.generator import GeneratorConfig, collect_locations
+
+    (tmp_path / "pkg").mkdir()
+    (tmp_path / "pkg" / "a.py").write_text("if x:\n    f(1)\n", encoding="utf-8")
+
+    def run(lines):
+        config = GeneratorConfig(project_root=tmp_path, sources=["pkg"], lines=lines)
+        return collect_locations(config)[1]
+
+    with pytest.raises(ValueError, match="pkg/typo.py"):
+        run(["pkg/typo.py:1-2"])
+    # Equivalent spellings of the same file are accepted.
+    assert list(run(["./pkg//a.py:1"])) == ["pkg/a.py"]
+    assert list(run(["{}:1".format(tmp_path / "pkg" / "a.py")])) == ["pkg/a.py"]

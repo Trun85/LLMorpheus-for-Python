@@ -9,6 +9,8 @@ down to syntactically valid, non-duplicate mutants.
 from __future__ import annotations
 
 import datetime as _dt
+import os
+import posixpath
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -51,6 +53,8 @@ class GeneratorConfig:
     include: Sequence[str] = ()
     exclude: Sequence[str] = ()
     kinds: Sequence[str] = ()
+    # "FILE:START-END" specs; a file named here keeps only locations starting in its ranges.
+    lines: Sequence[str] = ()
     template: str = DEFAULT_TEMPLATE
     system_template: str = DEFAULT_SYSTEM_TEMPLATE
     max_context_lines: int = 200
@@ -76,6 +80,17 @@ def collect_locations(
     )
     files = selector.find()
     kinds = resolve_kinds(config.kinds)
+    ranges = parse_line_ranges(config.lines, config.project_root)
+    # A file that matched nothing would otherwise be ignored silently, and the
+    # run would prompt about every location instead of the few that were asked for.
+    unmatched = sorted(set(ranges) - {item.relative_path for item in files})
+    if unmatched:
+        raise ValueError(
+            "--lines names {} not among the selected source files; use paths relative "
+            "to the project root, as `llmorpheus locations` prints them".format(
+                ", ".join(unmatched)
+            )
+        )
     per_file: Dict[str, List[Location]] = {}
     for source_file in files:
         locations = find_locations(
@@ -85,9 +100,47 @@ def collect_locations(
             max_fragment_chars=config.max_fragment_chars,
             max_fragment_lines=config.max_fragment_lines,
         )
+        spans = ranges.get(source_file.relative_path)
+        if spans is not None:
+            locations = [
+                location for location in locations
+                if any(start <= location.start.line <= end for start, end in spans)
+            ]
         if locations:
             per_file[source_file.relative_path] = locations
     return files, per_file
+
+
+def parse_line_ranges(
+    specs: Sequence[str], project_root: Optional[Path] = None
+) -> Dict[str, List[Tuple[int, int]]]:
+    """``["pkg/a.py:10-40", "pkg/a.py:90-95"]`` -> ``{"pkg/a.py": [(10, 40), (90, 95)]}``.
+
+    Paths are normalised (``./pkg/a.py`` and ``pkg//a.py`` mean ``pkg/a.py``), and
+    an absolute path under ``project_root`` is made relative to it.
+    """
+    ranges: Dict[str, List[Tuple[int, int]]] = {}
+    for spec in specs:
+        path, _, span = spec.rpartition(":")
+        start, _, end = span.partition("-")
+        if not path or not start.isdigit() or not (end or start).isdigit():
+            raise ValueError("--lines expects FILE:START-END, got {!r}".format(spec))
+        first, last = int(start), int(end or start)
+        if first > last:
+            raise ValueError("--lines range is backwards: {!r}".format(spec))
+        ranges.setdefault(_relative_spec_path(path, project_root), []).append((first, last))
+    return ranges
+
+
+def _relative_spec_path(path: str, project_root: Optional[Path]) -> str:
+    candidate = Path(path)
+    if candidate.is_absolute() and project_root is not None:
+        try:
+            # abspath on both sides, never resolve(): keep symlinks as the user wrote them.
+            candidate = Path(os.path.abspath(path)).relative_to(os.path.abspath(str(project_root)))
+        except ValueError:
+            pass
+    return posixpath.normpath(candidate.as_posix().replace("\\", "/"))
 
 
 def build_all_prompts(
@@ -214,6 +267,7 @@ def generate(
         "generated_at": _dt.datetime.now().astimezone().isoformat(timespec="seconds"),
         "project_root": str(config.project_root),
         "sources": list(config.sources),
+        "lines": list(config.lines),
         "kinds": sorted(resolve_kinds(config.kinds)),
         "template": config.template,
         "system_template": config.system_template,

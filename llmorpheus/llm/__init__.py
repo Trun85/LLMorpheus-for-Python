@@ -3,20 +3,22 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Mapping, Optional
+from typing import Mapping, Optional, Sequence
 
 from .anthropic_client import AnthropicClient
 from .base import CompletionCache, LLMClient, LLMError, LLMResponse
 from .deepseek_client import DeepSeekClient
 from .mock import MockClient
 from .openai_client import OpenAIClient
+from .openrouter_client import OpenRouterClient
 
-PROVIDERS = ("openai", "anthropic", "deepseek", "mock")
+PROVIDERS = ("openai", "anthropic", "deepseek", "openrouter", "mock")
 
 DEFAULT_MODELS = {
     "openai": "gpt-4o-mini",
     "anthropic": "claude-sonnet-4-5",
     "deepseek": "deepseek-flash",
+    "openrouter": "deepseek/deepseek-v4.1-flash",
     "mock": "mock",
 }
 
@@ -38,6 +40,7 @@ def build_client(
     cache_dir: Optional[Path] = None,
     thinking: bool = False,
     secrets: Optional[Mapping[str, str]] = None,
+    route: Sequence[str] = (),
 ) -> LLMClient:
     """Construct an :class:`LLMClient` from CLI-level options."""
     provider = provider.lower()
@@ -47,6 +50,8 @@ def build_client(
         )
     if thinking and provider != "deepseek":
         raise ValueError("--thinking is only supported by the deepseek provider")
+    if route and provider != "openrouter":
+        raise ValueError("--route is only supported by the openrouter provider")
     cache = CompletionCache(cache_dir)
     common = dict(
         model=model or DEFAULT_MODELS[provider],
@@ -76,6 +81,13 @@ def build_client(
         if api_key_env:
             deepseek.api_key_env = api_key_env
         return deepseek
+    if provider == "openrouter":
+        openrouter = OpenRouterClient(**common, route=list(route))
+        if base_url:
+            openrouter.base_url = base_url
+        if api_key_env:
+            openrouter.api_key_env = api_key_env
+        return openrouter
     client = OpenAIClient(**common)
     if base_url:
         client.base_url = base_url
@@ -96,6 +108,7 @@ __all__ = [
     "LLMResponse",
     "MockClient",
     "OpenAIClient",
+    "OpenRouterClient",
     "PROVIDERS",
     "THINKING_MAX_TOKENS",
     "build_client",

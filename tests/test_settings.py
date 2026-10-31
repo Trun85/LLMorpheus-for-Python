@@ -334,3 +334,27 @@ def test_a_subject_may_pin_a_commit_instead_of_a_tag(repo):
     assert status(commit) == ""
     assert status(commit[:7]) == ""
     assert "pins version" in status("0" * 40)
+
+
+# -- provider-specific defaults -------------------------------------------------------
+def test_provider_specific_dotenv_defaults_do_not_break_other_providers(repo, tmp_path):
+    """A .env tuned for one provider must still work with --provider for another."""
+    dotenv = repo / ".env"
+    dotenv.write_text(
+        dotenv.read_text(encoding="utf-8")
+        + "LLMORPHEUS_ROUTE=deepinfra/fp8/flex\nLLMORPHEUS_THINKING=true\n",
+        encoding="utf-8",
+    )
+
+    def client_for(*argv):
+        args = parse_arguments(["generate", "--no-cache", *argv], environ={}, repo_root=repo)
+        return _client(args, tmp_path)
+
+    mock = client_for("--provider", "mock")
+    assert mock.max_tokens == 250  # the ignored thinking setting does not raise the budget
+    assert client_for("--provider", "openrouter").route == ["deepinfra/fp8/flex"]
+    assert client_for("--provider", "deepseek").thinking is True
+
+    # Given explicitly on the command line, they are still mistakes.
+    with pytest.raises(ValueError, match="--route"):
+        client_for("--provider", "mock", "--route", "deepinfra/fp8")

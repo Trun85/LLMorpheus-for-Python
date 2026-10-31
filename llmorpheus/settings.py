@@ -72,6 +72,7 @@ OPTIONS: Tuple[Option, ...] = (
     Option("LLMORPHEUS_TEMPERATURE", "temperature", "float"),
     Option("LLMORPHEUS_MAX_TOKENS", "max_tokens", "int"),
     Option("LLMORPHEUS_THINKING", "thinking", "bool"),
+    Option("LLMORPHEUS_ROUTE", "route", "list"),
     Option("LLMORPHEUS_ATTEMPTS", "attempts", "int"),
     Option("LLMORPHEUS_RATE_LIMIT_MS", "rate_limit", "int"),
     Option("LLMORPHEUS_REQUEST_TIMEOUT", "request_timeout", "float"),
