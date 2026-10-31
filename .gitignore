@@ -17,3 +17,6 @@ dist/
 # Target projects are cloned into subjects/<name>/; only their .conf files and
 # the README are tracked.
 subjects/*/
+
+# BugsInPy++ run outputs: logs, raw llmorpheus JSON, per-bug records, the workbook.
+experiments/bugsinpy/results/
