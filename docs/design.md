@@ -102,9 +102,14 @@ number of invalid candidates.
   backstops. An interrupted run does not leave mutated source behind — but
   commit your work before a long run anyway.
 - **Parallelism.** `--jobs N` above 1 copies the project into one temporary
-  directory per worker and mutates the copies. If your package is installed in
-  editable mode, the copy's root is prepended to `PYTHONPATH` so the mutated
-  code wins; verify with a small `--limit` run before trusting a large one.
+  directory per worker and mutates the copies. The import roots of the mutated
+  files inside the copy (e.g. `src/` for a src layout) are prepended to
+  `PYTHONPATH`, ahead of any configured value, so the mutated code wins over an
+  editable install. The copy leaves out build, cache and virtualenv directories,
+  so the unmutated suite is run once inside a copy as well, and a failure there
+  aborts the run instead of counting every mutant as killed.
+- **Exact restore.** Files are restored from their original bytes, so CRLF line
+  endings survive a run, and mutants are written with the file's own line ending.
 - **No stale bytecode.** `PYTHONDONTWRITEBYTECODE=1` is set for test
   subprocesses and any `.pyc` for a mutated module is deleted, so a cached
   compile can never mask a mutant.

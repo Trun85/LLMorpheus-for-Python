@@ -47,12 +47,14 @@ DEFAULT_SCRUBBED_ENV = (
     "OPENROUTER_API_KEY",
 )
 
-# Files we restore on the way out even if the process is interrupted.
-_DIRTY_FILES: Dict[Path, str] = {}
+# Files we restore on the way out even if the process is interrupted. The
+# original bytes are kept, not decoded text: reading as text folds CRLF into LF,
+# and writing that back would rewrite the line endings of the user's files.
+_DIRTY_FILES: Dict[Path, bytes] = {}
 _DIRTY_LOCK = threading.Lock()
 
 
-def _remember(path: Path, original: str) -> None:
+def _remember(path: Path, original: bytes) -> None:
     with _DIRTY_LOCK:
         _DIRTY_FILES.setdefault(path, original)
 
@@ -74,7 +76,7 @@ def restore_all() -> List[Path]:
     failed: List[Path] = []
     for path, original in pending.items():
         try:
-            path.write_text(original, encoding="utf-8")
+            path.write_bytes(original)
         except OSError:
             failed.append(path)
     return failed
@@ -290,11 +292,18 @@ class Workspace:
 
     def __init__(self, root: Path, files: Iterable[str]) -> None:
         self.root = root
+        # Text as generation saw it (newlines normalised to "\n"), the exact
+        # bytes on disk for restoring, and the line ending to write mutants with.
         self._originals: Dict[str, str] = {}
+        self._raw: Dict[str, bytes] = {}
+        self._newlines: Dict[str, str] = {}
         for relative in files:
             path = self.root / relative
             if path.is_file():
+                raw = path.read_bytes()
+                self._raw[relative] = raw
                 self._originals[relative] = path.read_text(encoding="utf-8")
+                self._newlines[relative] = _line_ending(raw)
 
     def original(self, relative: str) -> Optional[str]:
         return self._originals.get(relative)
@@ -319,22 +328,38 @@ class Workspace:
                 )
             )
         path = self.root / mutant.file
-        _remember(path, original)
-        path.write_text(mutant.apply(original), encoding="utf-8")
+        _remember(path, self._raw[mutant.file])
+        with open(path, "w", encoding="utf-8", newline=self._newlines[mutant.file]) as handle:
+            handle.write(mutant.apply(original))
         _purge_bytecode(path)
         return None
 
     def restore(self, mutant: Mutant) -> None:
-        original = self._originals.get(mutant.file)
+        original = self._raw.get(mutant.file)
         if original is None:
             return
         path = self.root / mutant.file
         # Only drop the emergency-restore entry once the file is genuinely back:
         # forgetting it after a failed write would strip restore_all()'s ability
         # to recover, leaving mutated code on disk silently.
-        path.write_text(original, encoding="utf-8")
+        path.write_bytes(original)
         _purge_bytecode(path)
         _forget(path)
+
+
+def _line_ending(raw: bytes) -> str:
+    """The line ending a file uses throughout, or "\n" when it is LF or mixed.
+
+    A mutated file is only on disk for one test run, so a mixed-ending file
+    written with LF is harmless: restore() puts the exact original bytes back.
+    """
+    lf = raw.count(b"\n")
+    crlf = raw.count(b"\r\n")
+    if lf and crlf == lf:
+        return "\r\n"
+    if not lf and b"\r" in raw:
+        return "\r"
+    return "\n"
 
 
 def _purge_bytecode(path: Path) -> None:
@@ -432,31 +457,21 @@ def run_mutants(
                 record(_evaluate(mutant, workspace, runner, timeout))
         else:
             buckets = _split(mutants, config.jobs)
+            workers: List[Tuple[Path, TestRunner]] = []
+            for index in range(len(buckets)):
+                root = Path(tempfile.mkdtemp(prefix="llmorpheus-w{}-".format(index)))
+                temporary_roots.append(root)
+                worker_root = _copy_project(config.project_root, root / config.project_root.name)
+                worker_config = RunnerConfig(**{**config.__dict__, "project_root": worker_root})
+                worker_config.env = _worker_env(config, worker_root, files)
+                workers.append((worker_root, TestRunner(worker_config)))
+            if not config.skip_baseline:
+                _check_copy_baseline(workers[0][1], workers[0][0], timeout, console)
             with ThreadPoolExecutor(max_workers=len(buckets)) as pool:
-                futures = []
-                for index, bucket in enumerate(buckets):
-                    root = Path(tempfile.mkdtemp(prefix="llmorpheus-w{}-".format(index)))
-                    temporary_roots.append(root)
-                    worker_root = _copy_project(config.project_root, root / config.project_root.name)
-                    worker_config = RunnerConfig(**{**config.__dict__, "project_root": worker_root})
-                    worker_config.env = dict(config.env)
-                    worker_config.env.setdefault(
-                        "PYTHONPATH",
-                        os.pathsep.join(
-                            filter(None, [str(worker_root), os.environ.get("PYTHONPATH", "")])
-                        ),
-                    )
-                    futures.append(
-                        pool.submit(
-                            _evaluate_bucket,
-                            bucket,
-                            worker_root,
-                            files,
-                            TestRunner(worker_config),
-                            timeout,
-                            record,
-                        )
-                    )
+                futures = [
+                    pool.submit(_evaluate_bucket, bucket, root, files, worker, timeout, record)
+                    for bucket, (root, worker) in zip(buckets, workers)
+                ]
                 for future in as_completed(futures):
                     future.result()
     finally:
@@ -493,6 +508,60 @@ def run_mutants(
         )
     )
     return summary
+
+
+def _import_roots(root: Path, files: Iterable[str]) -> List[str]:
+    """Directories that must be on ``sys.path`` for ``files`` to import from ``root``.
+
+    For ``src/pkg/sub/mod.py`` with ``__init__.py`` in ``pkg`` and ``sub`` that is
+    ``src``; for a top-level ``mod.py`` it is ``root`` itself. Without ``src`` on
+    the path, a src-layout project installed in editable mode would import the
+    unmutated original, and every mutant would appear to survive.
+    """
+    roots: List[str] = []
+    for relative in files:
+        directory = (root / relative).parent
+        while directory != root and (directory / "__init__.py").is_file():
+            directory = directory.parent
+        entry = str(directory)
+        if entry not in roots:
+            roots.append(entry)
+    if str(root) not in roots:
+        roots.append(str(root))
+    return roots
+
+
+def _worker_env(config: RunnerConfig, worker_root: Path, files: Iterable[str]) -> Dict[str, str]:
+    """The test environment of one ``--jobs`` worker: the copy's code comes first."""
+    env = dict(config.env)
+    # Prepend rather than setdefault: a configured PYTHONPATH (possibly pointing
+    # at the real project) must not shadow the mutated copy.
+    existing = env.get("PYTHONPATH", os.environ.get("PYTHONPATH", ""))
+    env["PYTHONPATH"] = os.pathsep.join(_import_roots(worker_root, files) + ([existing] if existing else []))
+    return env
+
+
+def _check_copy_baseline(
+    runner: TestRunner, root: Path, timeout: float, console: Console
+) -> None:
+    """The unmutated suite must also pass inside a worker's copy of the project.
+
+    The copy leaves out ``DEFAULT_EXCLUDE_DIRS`` (``build``, ``dist``, ``env``,
+    ``.env``, ... at any depth). If the tests need one of them, every mutant
+    would fail for that reason alone and be counted as killed.
+    """
+    console.info("    checking the baseline in a worker copy")
+    outcome = runner.run(root, timeout)
+    if outcome.timed_out or outcome.exit_code != 0:
+        console.error(
+            "the unmutated test suite passes in the project but fails in the copy used "
+            "by --jobs (exit code {}), so parallel results would be wrong. The copy "
+            "leaves out {}; if the tests need any of these, run with --jobs 1. "
+            "Last output:\n{}".format(
+                outcome.exit_code, ", ".join(DEFAULT_EXCLUDE_DIRS), outcome.output
+            )
+        )
+        raise RuntimeError("baseline test run failed in a --jobs worker copy")
 
 
 def _evaluate_bucket(

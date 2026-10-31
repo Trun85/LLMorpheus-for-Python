@@ -9,8 +9,12 @@ conversion properly and is the single place in the tool that knows about it.
 from __future__ import annotations
 
 import ast
+import re
 from dataclasses import dataclass
 from typing import List, Optional, Tuple
+
+# One source line with its ending, using only the line breaks ``ast`` counts.
+_LINE = re.compile(r"[^\r\n]*(?:\r\n|\r|\n)|[^\r\n]+\Z")
 
 
 @dataclass(frozen=True, order=True)
@@ -36,7 +40,10 @@ class SourceMap:
 
     def __init__(self, source: str) -> None:
         self.source = source
-        self.lines: List[str] = source.splitlines(keepends=True)
+        # Not ``str.splitlines``: it also breaks at form feeds, \x1c-\x1e, \x85 and
+        #  / , which Python's tokenizer does not, so every line number
+        # after one of those would point at the wrong text.
+        self.lines: List[str] = _LINE.findall(source)
         line_start: List[int] = []
         running = 0
         for line in self.lines:

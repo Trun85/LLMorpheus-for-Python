@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence
 
+from ..analysis.positions import SourceMap
 from ..console import format_duration
 from .runner import ERROR, KILLED, SURVIVED, TIMEOUT, MutantResult, RunSummary
 
@@ -90,7 +91,8 @@ def _payload(summary: RunSummary, project_root: Optional[Path]) -> dict:
                         text = path.read_text(encoding="utf-8")
                     except OSError:
                         text = ""
-            cache[relative] = text.splitlines()
+            # Same line breaks as the mutants' positions (see SourceMap).
+            cache[relative] = [line.rstrip("\r\n") for line in SourceMap(text).lines]
         return cache[relative]
 
     items = []

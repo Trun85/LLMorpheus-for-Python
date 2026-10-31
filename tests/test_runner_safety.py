@@ -210,3 +210,93 @@ def test_restore_all_reports_what_it_could_not_restore(project: Path):
     finally:
         os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)
         path.write_text(MODULE, encoding="utf-8")
+
+
+# -- line endings ----------------------------------------------------------
+def test_restore_keeps_crlf_line_endings_byte_for_byte(project: Path):
+    path = project / "mod.py"
+    original = MODULE.replace("\n", "\r\n").encode("utf-8")
+    path.write_bytes(original)
+    mutant = make_mutant(path.read_text(encoding="utf-8"))
+    workspace = Workspace(project, ["mod.py"])
+
+    assert workspace.apply(mutant) is None
+    mutated = path.read_bytes()
+    assert b"value > 11" in mutated
+    assert mutated.count(b"\r\n") == mutated.count(b"\n")  # mutant written as CRLF too
+
+    workspace.restore(mutant)
+    assert path.read_bytes() == original
+
+
+def test_emergency_restore_keeps_crlf_line_endings(project: Path):
+    path = project / "mod.py"
+    original = MODULE.replace("\n", "\r\n").encode("utf-8")
+    path.write_bytes(original)
+    Workspace(project, ["mod.py"]).apply(make_mutant(path.read_text(encoding="utf-8")))
+
+    assert restore_all() == []
+    assert path.read_bytes() == original
+
+
+# -- --jobs worker copies --------------------------------------------------
+def _parallel_config(project: Path, **overrides) -> RunnerConfig:
+    settings = dict(
+        project_root=project,
+        test_command=[sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider"],
+        jobs=2,
+    )
+    settings.update(overrides)
+    return RunnerConfig(**settings)
+
+
+def test_parallel_run_refuses_a_copy_whose_baseline_fails(project: Path):
+    """The copy leaves out build/; a suite that needs it would 'kill' everything."""
+    (project / "build").mkdir()
+    (project / "build" / "fixture.txt").write_text("data", encoding="utf-8")
+    (project / "test_fixture.py").write_text(
+        "from pathlib import Path\n\n\ndef test_fixture():\n"
+        "    assert (Path(__file__).parent / 'build' / 'fixture.txt').exists()\n",
+        encoding="utf-8",
+    )
+    mutants = [make_mutant(MODULE, "value > 11"), make_mutant(MODULE, "value >= 10")]
+    mutant_set = MutantSet(mutants=mutants, stats=GenerationStats())
+
+    with pytest.raises(RuntimeError, match="worker copy"):
+        run_mutants(mutant_set, _parallel_config(project))
+    assert (project / "mod.py").read_text(encoding="utf-8") == MODULE
+
+
+def test_parallel_run_mutates_the_copy_of_a_src_layout_package(tmp_path: Path):
+    """PYTHONPATH pointing at the real src/ (as an editable install does) must not win."""
+    project = tmp_path / "proj"
+    package = project / "src" / "pkg"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    (package / "mod.py").write_text(MODULE, encoding="utf-8")
+    (project / "tests").mkdir()
+    (project / "tests" / "test_mod.py").write_text(
+        'from pkg.mod import classify\n\n\ndef test_big():\n    assert classify(11) == "big"\n',
+        encoding="utf-8",
+    )
+    location = [
+        item for item in find_locations(MODULE, "src/pkg/mod.py") if item.kind == IF_CONDITION
+    ][0]
+    mutants = [
+        Mutant(
+            id="m{}".format(index),
+            file="src/pkg/mod.py",
+            kind=location.kind,
+            start=location.start,
+            end=location.end,
+            original=location.original,
+            replacement=replacement,
+        )
+        for index, replacement in enumerate(["value > 100", "value < 0"])
+    ]
+    config = _parallel_config(project, env={"PYTHONPATH": str(project / "src")})
+
+    summary = run_mutants(MutantSet(mutants=mutants, stats=GenerationStats()), config)
+
+    assert [result.status for result in summary.results] == [KILLED, KILLED]
+    assert (package / "mod.py").read_text(encoding="utf-8") == MODULE

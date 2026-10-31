@@ -98,3 +98,14 @@ def test_resolve_kinds_rejects_unknown_names():
         assert "nonsense" in str(error)
     else:  # pragma: no cover
         raise AssertionError("expected ValueError")
+
+
+def test_form_feed_and_unicode_separators_do_not_shift_lines():
+    """str.splitlines() breaks at these, Python's tokenizer does not."""
+    body = "result = compute(total, rate)\nif result > limit:\n    notify(user)\n"
+    plain = find_locations("x = 1  # ab\n" + body, "m.py")
+    for odd in ("\x0c", "\u2028", "\x1c", "\x85"):
+        located = find_locations("x = 1  # a{}b\n".format(odd) + body, "m.py")
+        assert [(item.kind, item.start, item.original) for item in located] == [
+            (item.kind, item.start, item.original) for item in plain
+        ], repr(odd)
